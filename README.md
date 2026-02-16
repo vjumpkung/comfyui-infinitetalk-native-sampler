@@ -54,10 +54,14 @@ Custom sampler interface accepting NOISE/SAMPLER/SIGMAS objects for advanced wor
 1. Clone this repository into your ComfyUI `custom_nodes` folder:
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/yourusername/comfyui-infinitalk-native-sampler.git
+git clone https://github.com/vjumpkung/comfyui-infinitalk-native-sampler.git
 ```
 
 2. Restart ComfyUI — the nodes will be automatically loaded.
+
+or 
+
+Install from ComfyUI Manager search `infinitetalk-native-sampler`
 
 ## Requirements
 
@@ -162,3 +166,5 @@ When using two audio encoders, both masks must be provided.
 
 - Based on WAN 2.1 model architecture
 - InfiniteTalk implementation for lip-sync generation
+
+**The entire codebase is generate from Claude Code.**
