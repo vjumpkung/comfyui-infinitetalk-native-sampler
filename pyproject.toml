@@ -1,14 +1,14 @@
 [project]
 name = "infinitetalk-native-sampler"
 description = "A ComfyUI custom node package for generating lip-sync videos from audio using WAN 2.1 models with automatic frame extension for long audio."
-version = "1.0.0"
+version = "1.0.1"
 license = {file = "LICENSE"} 
 
 [project.urls]
-Repository = "https://github.com/vjumpkung/comfyui-infinitalk-native-sampler"
+Repository = "https://github.com/vjumpkung/comfyui-infinitetalk-native-sampler"
 
-Documentation = "https://github.com/vjumpkung/comfyui-infinitalk-native-sampler/wiki"
-"Bug Tracker" = "https://github.com/vjumpkung/comfyui-infinitalk-native-sampler/issues"
+Documentation = "https://github.com/vjumpkung/comfyui-infinitetalk-native-sampler/wiki"
+"Bug Tracker" = "https://github.com/vjumpkung/comfyui-infinitetalk-native-sampler/issues"
 
 [tool.comfy]
 PublisherId = "vjumpkung"
