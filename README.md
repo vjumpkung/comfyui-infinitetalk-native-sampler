@@ -69,6 +69,8 @@ Install from ComfyUI Manager search `infinitetalk-native-sampler`
 - Compatible audio encoder (e.g., wav2vec2-base)
 - `comfy.ldm.wan.model_multitalk` module (included in recent ComfyUI versions)
 
+> **Note:** A startup patch for the wav2vec2 fp16 dtype bug is included and applied automatically.
+
 ## Workflow
 
 A sample workflow is included in [`workflows/infinitetalk_native_loop_sampler_by_vjumpkung.json`](workflows/infinitetalk_native_loop_sampler_by_vjumpkung.json).
@@ -157,6 +159,9 @@ Reduce `length` parameter to generate fewer frames per pass.
 
 ### "Both mask_1 and mask_2 are required"
 When using two audio encoders, both masks must be provided.
+
+### "Input type (float) and bias type (c10::Half) should be the same"
+This is a ComfyUI core bug that occurs when the wav2vec2 audio encoder is loaded in fp16. This package automatically patches the issue at startup via `_patches.py` — no manual action needed. If the error persists, ensure you are using a recent version of this package.
 
 ## License
 

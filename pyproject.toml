@@ -1,7 +1,7 @@
 [project]
 name = "infinitetalk-native-sampler"
 description = "A ComfyUI custom node package for generating lip-sync videos from audio using WAN 2.1 models with automatic frame extension for long audio."
-version = "1.0.1"
+version = "1.0.2"
 license = {file = "LICENSE"} 
 
 [project.urls]
