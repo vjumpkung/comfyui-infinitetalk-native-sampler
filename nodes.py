@@ -39,6 +39,7 @@ def common_ksampler(
     negative,
     latent,
     denoise=1.0,
+    callback=None,
 ):
     latent_image = latent["samples"]
     latent_image = comfy.sample.fix_empty_latent_channels(
@@ -50,7 +51,8 @@ def common_ksampler(
 
     noise_mask = latent.get("noise_mask", None)
 
-    callback = latent_preview.prepare_callback(model, steps)
+    if callback is None:
+        callback = latent_preview.prepare_callback(model, steps)
     disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
     samples = comfy.sample.sample(
         model,
@@ -79,7 +81,8 @@ def common_ksampler(
 
 
 def advanced_sampler(
-    model_patched, positive, negative, cfg, noise_obj, sampler_obj, sigmas, latent
+    model_patched, positive, negative, cfg, noise_obj, sampler_obj, sigmas, latent,
+    callback=None,
 ):
     """Sample using advanced custom sampler inputs (NOISE, SAMPLER, SIGMAS)."""
     latent_image = latent["samples"]
@@ -96,7 +99,8 @@ def advanced_sampler(
 
     noise = noise_obj.generate_noise({"samples": latent_image})
 
-    callback = latent_preview.prepare_callback(model_patched, sigmas.shape[-1] - 1)
+    if callback is None:
+        callback = latent_preview.prepare_callback(model_patched, sigmas.shape[-1] - 1)
     disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
 
     samples = guider.sample(
@@ -258,6 +262,21 @@ def decode_video(vae, latent_samples):
     return frames
 
 
+def motion_latent_frames_count(motion_frame_count):
+    return ((motion_frame_count - 1) // 4) + 1
+
+
+def make_pass_callback(model, steps_per_pass, pbar, step_offset):
+    """Wrap latent_preview callback to update a shared pbar with absolute step position."""
+    inner_cb = latent_preview.prepare_callback(model, steps_per_pass)
+
+    def callback(step, x0, x, total_steps_inner):
+        inner_cb(step, x0, x, total_steps_inner)
+        pbar.update_absolute(step_offset + step + 1)
+
+    return callback
+
+
 def patch_model_for_pass(
     model,
     model_patch,
@@ -410,18 +429,19 @@ class InfiniteTalkAutoSampler:
         )
         start_image_cond = encode_start_image(start_image, vae, width, height, length)
 
-        pbar = comfy.utils.ProgressBar(total_passes)
+        total_steps = total_passes * steps
+        pbar = comfy.utils.ProgressBar(total_steps)
 
         # --- Base pass ---
-        accumulated_frames = self._run_base_pass(
+        accumulated_latent, motion_frames_latent = self._run_base_pass(
             model,
             model_patch,
             positive,
             negative,
-            vae,
             width,
             height,
             length,
+            motion_frame_count,
             audio_scale,
             seed,
             steps,
@@ -433,17 +453,18 @@ class InfiniteTalkAutoSampler:
             clip_vision_output,
             encoded_audio_list,
             ref_masks,
+            pbar,
+            step_offset=0,
         )
-        pbar.update(1)
+        accumulated_pixel_count = length
 
         # --- Extend passes ---
         for ext_idx in range(num_extends):
-            accumulated_frames = self._run_extend_pass(
+            accumulated_latent, motion_frames_latent, accumulated_pixel_count = self._run_extend_pass(
                 model,
                 model_patch,
                 positive,
                 negative,
-                vae,
                 width,
                 height,
                 length,
@@ -459,10 +480,14 @@ class InfiniteTalkAutoSampler:
                 clip_vision_output,
                 encoded_audio_list,
                 ref_masks,
-                accumulated_frames,
+                accumulated_latent,
+                motion_frames_latent,
+                accumulated_pixel_count,
+                pbar,
+                step_offset=(ext_idx + 1) * steps,
             )
-            pbar.update(1)
 
+        accumulated_frames = decode_video(vae, accumulated_latent)
         if accumulated_frames.shape[0] > total_frames:
             accumulated_frames = accumulated_frames[:total_frames]
 
@@ -474,10 +499,10 @@ class InfiniteTalkAutoSampler:
         model_patch,
         positive,
         negative,
-        vae,
         width,
         height,
         length,
+        motion_frame_count,
         audio_scale,
         seed,
         steps,
@@ -489,6 +514,8 @@ class InfiniteTalkAutoSampler:
         clip_vision_output,
         encoded_audio_list,
         ref_masks,
+        pbar,
+        step_offset,
     ):
         latent = torch.zeros(
             [1, 16, ((length - 1) // 4) + 1, height // 8, width // 8],
@@ -520,6 +547,7 @@ class InfiniteTalkAutoSampler:
             is_extend=False,
         )
 
+        callback = make_pass_callback(model_patched, steps, pbar, step_offset)
         out_latent = common_ksampler(
             model_patched,
             seed,
@@ -531,11 +559,14 @@ class InfiniteTalkAutoSampler:
             neg,
             {"samples": latent},
             denoise,
+            callback=callback,
         )
 
-        frames = decode_video(vae, out_latent["samples"])
-        logging.info(f"InfiniteTalk base pass: decoded {frames.shape[0]} frames")
-        return frames
+        t_motion = motion_latent_frames_count(motion_frame_count)
+        new_motion_frames_latent = out_latent["samples"][:, :, -t_motion:]
+        accumulated_latent = out_latent["samples"].cpu()
+        logging.info(f"InfiniteTalk base pass: {accumulated_latent.shape[2]} latent temporal frames")
+        return accumulated_latent, new_motion_frames_latent
 
     def _run_extend_pass(
         self,
@@ -543,7 +574,6 @@ class InfiniteTalkAutoSampler:
         model_patch,
         positive,
         negative,
-        vae,
         width,
         height,
         length,
@@ -559,7 +589,11 @@ class InfiniteTalkAutoSampler:
         clip_vision_output,
         encoded_audio_list,
         ref_masks,
-        accumulated_frames,
+        accumulated_latent,
+        motion_frames_latent,
+        accumulated_pixel_count,
+        pbar,
+        step_offset,
     ):
         latent = torch.zeros(
             [1, 16, ((length - 1) // 4) + 1, height // 8, width // 8],
@@ -570,16 +604,10 @@ class InfiniteTalkAutoSampler:
             positive, negative, start_image_cond, clip_vision_output
         )
 
-        motion_frames = comfy.utils.common_upscale(
-            accumulated_frames[-motion_frame_count:].movedim(-1, 1),
-            width,
-            height,
-            "bilinear",
-            "center",
-        ).movedim(1, -1)
-        motion_frames_latent = vae.encode(motion_frames[:, :, :, :3])
+        t_motion = motion_latent_frames_count(motion_frame_count)
+        motion_frames_latent = motion_frames_latent.to(comfy.model_management.intermediate_device())
 
-        frame_offset = accumulated_frames.shape[0] - motion_frame_count
+        frame_offset = accumulated_pixel_count - motion_frame_count
         audio_start = frame_offset
         audio_end = audio_start + length
         logging.info(
@@ -599,6 +627,7 @@ class InfiniteTalkAutoSampler:
             is_extend=True,
         )
 
+        callback = make_pass_callback(model_patched, steps, pbar, step_offset)
         out_latent = common_ksampler(
             model_patched,
             seed,
@@ -610,15 +639,17 @@ class InfiniteTalkAutoSampler:
             neg,
             {"samples": latent},
             denoise,
+            callback=callback,
         )
 
-        frames = decode_video(vae, out_latent["samples"])
-        new_frames = frames[motion_frame_count:]
-        accumulated_frames = torch.cat([accumulated_frames, new_frames], dim=0)
+        new_latent_frames = out_latent["samples"][:, :, t_motion:].cpu()
+        accumulated_latent = torch.cat([accumulated_latent, new_latent_frames], dim=2)
+        new_motion_frames_latent = out_latent["samples"][:, :, -t_motion:]
+        new_pixel_count = accumulated_pixel_count + (length - motion_frame_count)
         logging.info(
-            f"InfiniteTalk extend pass: total accumulated {accumulated_frames.shape[0]} frames"
+            f"InfiniteTalk extend pass: total accumulated latent temporal {accumulated_latent.shape[2]}"
         )
-        return accumulated_frames
+        return accumulated_latent, new_motion_frames_latent, new_pixel_count
 
 
 # ===========================================================================
@@ -709,18 +740,20 @@ class InfiniteTalkAutoSamplerAdvanced:
         )
         start_image_cond = encode_start_image(start_image, vae, width, height, length)
 
-        pbar = comfy.utils.ProgressBar(total_passes)
+        steps_per_pass = sigmas.shape[-1] - 1
+        total_steps = total_passes * steps_per_pass
+        pbar = comfy.utils.ProgressBar(total_steps)
 
         # --- Base pass ---
-        accumulated_frames = self._run_base_pass(
+        accumulated_latent, motion_frames_latent = self._run_base_pass(
             model,
             model_patch,
             positive,
             negative,
-            vae,
             width,
             height,
             length,
+            motion_frame_count,
             audio_scale,
             cfg,
             noise,
@@ -730,17 +763,18 @@ class InfiniteTalkAutoSamplerAdvanced:
             clip_vision_output,
             encoded_audio_list,
             ref_masks,
+            pbar,
+            step_offset=0,
         )
-        pbar.update(1)
+        accumulated_pixel_count = length
 
         # --- Extend passes ---
         for ext_idx in range(num_extends):
-            accumulated_frames = self._run_extend_pass(
+            accumulated_latent, motion_frames_latent, accumulated_pixel_count = self._run_extend_pass(
                 model,
                 model_patch,
                 positive,
                 negative,
-                vae,
                 width,
                 height,
                 length,
@@ -754,10 +788,14 @@ class InfiniteTalkAutoSamplerAdvanced:
                 clip_vision_output,
                 encoded_audio_list,
                 ref_masks,
-                accumulated_frames,
+                accumulated_latent,
+                motion_frames_latent,
+                accumulated_pixel_count,
+                pbar,
+                step_offset=(ext_idx + 1) * steps_per_pass,
             )
-            pbar.update(1)
 
+        accumulated_frames = decode_video(vae, accumulated_latent)
         if accumulated_frames.shape[0] > total_frames:
             accumulated_frames = accumulated_frames[:total_frames]
 
@@ -769,10 +807,10 @@ class InfiniteTalkAutoSamplerAdvanced:
         model_patch,
         positive,
         negative,
-        vae,
         width,
         height,
         length,
+        motion_frame_count,
         audio_scale,
         cfg,
         noise_obj,
@@ -782,6 +820,8 @@ class InfiniteTalkAutoSamplerAdvanced:
         clip_vision_output,
         encoded_audio_list,
         ref_masks,
+        pbar,
+        step_offset,
     ):
         latent = torch.zeros(
             [1, 16, ((length - 1) // 4) + 1, height // 8, width // 8],
@@ -813,6 +853,7 @@ class InfiniteTalkAutoSamplerAdvanced:
             is_extend=False,
         )
 
+        callback = make_pass_callback(model_patched, sigmas.shape[-1] - 1, pbar, step_offset)
         out_latent = advanced_sampler(
             model_patched,
             pos,
@@ -822,13 +863,16 @@ class InfiniteTalkAutoSamplerAdvanced:
             sampler_obj,
             sigmas,
             {"samples": latent},
+            callback=callback,
         )
 
-        frames = decode_video(vae, out_latent["samples"])
+        t_motion = motion_latent_frames_count(motion_frame_count)
+        new_motion_frames_latent = out_latent["samples"][:, :, -t_motion:]
+        accumulated_latent = out_latent["samples"].cpu()
         logging.info(
-            f"InfiniteTalk base pass (advanced): decoded {frames.shape[0]} frames"
+            f"InfiniteTalk base pass (advanced): {accumulated_latent.shape[2]} latent temporal frames"
         )
-        return frames
+        return accumulated_latent, new_motion_frames_latent
 
     def _run_extend_pass(
         self,
@@ -836,7 +880,6 @@ class InfiniteTalkAutoSamplerAdvanced:
         model_patch,
         positive,
         negative,
-        vae,
         width,
         height,
         length,
@@ -850,7 +893,11 @@ class InfiniteTalkAutoSamplerAdvanced:
         clip_vision_output,
         encoded_audio_list,
         ref_masks,
-        accumulated_frames,
+        accumulated_latent,
+        motion_frames_latent,
+        accumulated_pixel_count,
+        pbar,
+        step_offset,
     ):
         latent = torch.zeros(
             [1, 16, ((length - 1) // 4) + 1, height // 8, width // 8],
@@ -861,16 +908,10 @@ class InfiniteTalkAutoSamplerAdvanced:
             positive, negative, start_image_cond, clip_vision_output
         )
 
-        motion_frames = comfy.utils.common_upscale(
-            accumulated_frames[-motion_frame_count:].movedim(-1, 1),
-            width,
-            height,
-            "bilinear",
-            "center",
-        ).movedim(1, -1)
-        motion_frames_latent = vae.encode(motion_frames[:, :, :, :3])
+        t_motion = motion_latent_frames_count(motion_frame_count)
+        motion_frames_latent = motion_frames_latent.to(comfy.model_management.intermediate_device())
 
-        frame_offset = accumulated_frames.shape[0] - motion_frame_count
+        frame_offset = accumulated_pixel_count - motion_frame_count
         audio_start = frame_offset
         audio_end = audio_start + length
         logging.info(
@@ -890,6 +931,7 @@ class InfiniteTalkAutoSamplerAdvanced:
             is_extend=True,
         )
 
+        callback = make_pass_callback(model_patched, sigmas.shape[-1] - 1, pbar, step_offset)
         out_latent = advanced_sampler(
             model_patched,
             pos,
@@ -899,12 +941,14 @@ class InfiniteTalkAutoSamplerAdvanced:
             sampler_obj,
             sigmas,
             {"samples": latent},
+            callback=callback,
         )
 
-        frames = decode_video(vae, out_latent["samples"])
-        new_frames = frames[motion_frame_count:]
-        accumulated_frames = torch.cat([accumulated_frames, new_frames], dim=0)
+        new_latent_frames = out_latent["samples"][:, :, t_motion:].cpu()
+        accumulated_latent = torch.cat([accumulated_latent, new_latent_frames], dim=2)
+        new_motion_frames_latent = out_latent["samples"][:, :, -t_motion:]
+        new_pixel_count = accumulated_pixel_count + (length - motion_frame_count)
         logging.info(
-            f"InfiniteTalk extend pass (advanced): total accumulated {accumulated_frames.shape[0]} frames"
+            f"InfiniteTalk extend pass (advanced): total accumulated latent temporal {accumulated_latent.shape[2]}"
         )
-        return accumulated_frames
+        return accumulated_latent, new_motion_frames_latent, new_pixel_count
