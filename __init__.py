@@ -1,5 +1,4 @@
 from .nodes import InfiniteTalkAutoSampler, InfiniteTalkAutoSamplerAdvanced
-from . import _patches  # noqa: F401
 
 # Module import message
 print(

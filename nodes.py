@@ -81,7 +81,14 @@ def common_ksampler(
 
 
 def advanced_sampler(
-    model_patched, positive, negative, cfg, noise_obj, sampler_obj, sigmas, latent,
+    model_patched,
+    positive,
+    negative,
+    cfg,
+    noise_obj,
+    sampler_obj,
+    sigmas,
+    latent,
     callback=None,
 ):
     """Sample using advanced custom sampler inputs (NOISE, SAMPLER, SIGMAS)."""
@@ -845,7 +852,9 @@ class InfiniteTalkAutoSamplerAdvanced:
             is_extend=False,
         )
 
-        callback = make_pass_callback(model_patched, sigmas.shape[-1] - 1, pbar, step_offset)
+        callback = make_pass_callback(
+            model_patched, sigmas.shape[-1] - 1, pbar, step_offset
+        )
         out_latent = advanced_sampler(
             model_patched,
             pos,
@@ -926,7 +935,9 @@ class InfiniteTalkAutoSamplerAdvanced:
             is_extend=True,
         )
 
-        callback = make_pass_callback(model_patched, sigmas.shape[-1] - 1, pbar, step_offset)
+        callback = make_pass_callback(
+            model_patched, sigmas.shape[-1] - 1, pbar, step_offset
+        )
         out_latent = advanced_sampler(
             model_patched,
             pos,
