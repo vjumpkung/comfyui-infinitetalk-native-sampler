@@ -1,18 +1,16 @@
+from comfy_api.latest import ComfyExtension, io
+
 from .nodes import InfiniteTalkAutoSampler, InfiniteTalkAutoSamplerAdvanced
 
-# Module import message
 print(
     "🎵 [InfiniteTalk Native Sampler] Loaded: InfiniteTalkAutoSampler, InfiniteTalkAutoSamplerAdvanced"
 )
 
-NODE_CLASS_MAPPINGS = {
-    "InfiniteTalkAutoSampler": InfiniteTalkAutoSampler,
-    "InfiniteTalkAutoSamplerAdvanced": InfiniteTalkAutoSamplerAdvanced,
-}
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "InfiniteTalkAutoSampler": "InfiniteTalk Auto Sampler",
-    "InfiniteTalkAutoSamplerAdvanced": "InfiniteTalk Auto Sampler (Advanced)",
-}
+class InfiniteTalkExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [InfiniteTalkAutoSampler, InfiniteTalkAutoSamplerAdvanced]
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+
+async def comfy_entrypoint() -> InfiniteTalkExtension:
+    return InfiniteTalkExtension()

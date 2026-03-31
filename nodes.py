@@ -1,6 +1,8 @@
 import logging
 import math
 
+import torch
+
 import comfy.model_management
 import comfy.patcher_extension
 import comfy.sample
@@ -8,13 +10,13 @@ import comfy.samplers
 import comfy.utils
 import latent_preview
 import node_helpers
-import torch
 from comfy.ldm.wan.model_multitalk import (
     InfiniteTalkOuterSampleWrapper,
     MultiTalkCrossAttnPatch,
     MultiTalkGetAttnMapPatch,
     project_audio_features,
 )
+from comfy_api.latest import io
 
 
 def linear_interpolation(features, input_fps, output_fps, output_len=None):
@@ -146,12 +148,11 @@ def validate_two_speaker(audio_encoder_output_2, mask_1, mask_2):
             raise ValueError("Both mask_1 and mask_2 must be provided together.")
 
 
-def compute_pass_counts(audio, length, motion_frame_count):
-    fps = 25
+def compute_pass_counts(audio, length, motion_frame_count, framerate):
     waveform = audio["waveform"]
     sample_rate = audio["sample_rate"]
     audio_duration = waveform.shape[-1] / sample_rate
-    total_frames = math.ceil(audio_duration * fps)
+    total_frames = math.ceil(audio_duration * framerate)
     logging.info(
         f"InfiniteTalkAutoSampler: audio={audio_duration:.2f}s, total_frames={total_frames}"
     )
@@ -170,7 +171,9 @@ def compute_pass_counts(audio, length, motion_frame_count):
     return total_frames, num_extends, total_passes
 
 
-def encode_audio_features(audio_encoder_output_1, audio_encoder_output_2, model_patch):
+def encode_audio_features(
+    audio_encoder_output_1, audio_encoder_output_2, model_patch, framerate
+):
     encoded_audio_list = []
     seq_lengths = []
     for audio_enc in [audio_encoder_output_1, audio_encoder_output_2]:
@@ -179,7 +182,7 @@ def encode_audio_features(audio_encoder_output_1, audio_encoder_output_2, model_
         all_layers = audio_enc["encoded_audio_all_layers"]
         encoded_audio = torch.stack(all_layers, dim=0).squeeze(1)[1:]
         encoded_audio = linear_interpolation(
-            encoded_audio, input_fps=50, output_fps=25
+            encoded_audio, input_fps=50, output_fps=framerate
         ).movedim(0, 1)
         encoded_audio_list.append(encoded_audio)
         seq_lengths.append(encoded_audio.shape[0])
@@ -342,58 +345,56 @@ def prepare_conditioning(positive, negative, start_image_cond, clip_vision_outpu
 # ===========================================================================
 
 
-class InfiniteTalkAutoSampler:
+class InfiniteTalkAutoSampler(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model": ("MODEL",),
-                "model_patch": ("MODEL_PATCH",),
-                "positive": ("CONDITIONING",),
-                "negative": ("CONDITIONING",),
-                "vae": ("VAE",),
-                "audio_encoder_output_1": ("AUDIO_ENCODER_OUTPUT",),
-                "audio": ("AUDIO",),
-                "width": ("INT", {"default": 832, "min": 16, "max": 4096, "step": 16}),
-                "height": ("INT", {"default": 480, "min": 16, "max": 4096, "step": 16}),
-                "length": ("INT", {"default": 81, "min": 1, "max": 4096, "step": 4}),
-                "motion_frame_count": (
-                    "INT",
-                    {"default": 9, "min": 1, "max": 33, "step": 1},
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="InfiniteTalkAutoSampler",
+            display_name="InfiniteTalk Auto Sampler",
+            category="video/infinitetalk",
+            inputs=[
+                io.Model.Input("model"),
+                io.ModelPatch.Input("model_patch"),
+                io.Conditioning.Input("positive"),
+                io.Conditioning.Input("negative"),
+                io.Vae.Input("vae"),
+                io.AudioEncoderOutput.Input("audio_encoder_output_1"),
+                io.Audio.Input("audio"),
+                io.Int.Input("width", default=832, min=16, max=4096, step=16),
+                io.Int.Input("height", default=480, min=16, max=4096, step=16),
+                io.Int.Input("length", default=81, min=1, max=4096, step=4),
+                io.Int.Input("motion_frame_count", default=9, min=1, max=33),
+                io.Float.Input(
+                    "audio_scale", default=1.0, min=-10.0, max=10.0, step=0.01
                 ),
-                "audio_scale": (
-                    "FLOAT",
-                    {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01},
+                io.Int.Input(
+                    "seed",
+                    default=0,
+                    min=0,
+                    max=0xFFFFFFFFFFFFFFFF,
+                    control_after_generate=True,
                 ),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
-                "steps": ("INT", {"default": 4, "min": 1, "max": 10000}),
-                "cfg": (
-                    "FLOAT",
-                    {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1},
-                ),
-                "sampler_name": (comfy.samplers.SAMPLER_NAMES,),
-                "scheduler": (comfy.samplers.SCHEDULER_NAMES,),
-                "denoise": (
-                    "FLOAT",
-                    {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01},
-                ),
-            },
-            "optional": {
-                "start_image": ("IMAGE",),
-                "clip_vision_output": ("CLIP_VISION_OUTPUT",),
-                "audio_encoder_output_2": ("AUDIO_ENCODER_OUTPUT",),
-                "mask_1": ("MASK",),
-                "mask_2": ("MASK",),
-            },
-        }
+                io.Int.Input("steps", default=4, min=1, max=10000),
+                io.Float.Input("cfg", default=1.0, min=0.0, max=100.0, step=0.1),
+                io.Combo.Input("sampler_name", options=comfy.samplers.SAMPLER_NAMES),
+                io.Combo.Input("scheduler", options=comfy.samplers.SCHEDULER_NAMES),
+                io.Float.Input("denoise", default=1.0, min=0.0, max=1.0, step=0.01),
+                io.Int.Input("framerate", default=25, min=1, max=120),
+                io.Image.Input("start_image", optional=True),
+                io.ClipVisionOutput.Input("clip_vision_output", optional=True),
+                io.AudioEncoderOutput.Input("audio_encoder_output_2", optional=True),
+                io.Mask.Input("mask_1", optional=True),
+                io.Mask.Input("mask_2", optional=True),
+            ],
+            outputs=[
+                io.Image.Output(display_name="images"),
+                io.Audio.Output(display_name="audio"),
+            ],
+        )
 
-    RETURN_TYPES = ("IMAGE", "AUDIO")
-    RETURN_NAMES = ("images", "audio")
-    FUNCTION = "execute"
-    CATEGORY = "video/infinitetalk"
-
+    @classmethod
     def execute(
-        self,
+        cls,
         model,
         model_patch,
         positive,
@@ -412,15 +413,16 @@ class InfiniteTalkAutoSampler:
         sampler_name,
         scheduler,
         denoise,
+        framerate,
         start_image=None,
         clip_vision_output=None,
         audio_encoder_output_2=None,
         mask_1=None,
         mask_2=None,
-    ):
+    ) -> io.NodeOutput:
         validate_two_speaker(audio_encoder_output_2, mask_1, mask_2)
         total_frames, num_extends, total_passes = compute_pass_counts(
-            audio, length, motion_frame_count
+            audio, length, motion_frame_count, framerate
         )
 
         ref_masks = None
@@ -428,7 +430,7 @@ class InfiniteTalkAutoSampler:
             ref_masks = torch.cat([mask_1, mask_2])
 
         encoded_audio_list = encode_audio_features(
-            audio_encoder_output_1, audio_encoder_output_2, model_patch
+            audio_encoder_output_1, audio_encoder_output_2, model_patch, framerate
         )
         start_image_cond = encode_start_image(start_image, vae, width, height, length)
 
@@ -436,7 +438,7 @@ class InfiniteTalkAutoSampler:
         pbar = comfy.utils.ProgressBar(total_steps)
 
         # --- Base pass ---
-        accumulated_frames = self._run_base_pass(
+        accumulated_frames = cls._run_base_pass(
             model,
             model_patch,
             positive,
@@ -462,7 +464,7 @@ class InfiniteTalkAutoSampler:
 
         # --- Extend passes ---
         for ext_idx in range(num_extends):
-            accumulated_frames = self._run_extend_pass(
+            accumulated_frames = cls._run_extend_pass(
                 model,
                 model_patch,
                 positive,
@@ -491,10 +493,11 @@ class InfiniteTalkAutoSampler:
         if accumulated_frames.shape[0] > total_frames:
             accumulated_frames = accumulated_frames[:total_frames]
 
-        return (accumulated_frames, audio)
+        return io.NodeOutput(accumulated_frames, audio)
 
+    @classmethod
     def _run_base_pass(
-        self,
+        cls,
         model,
         model_patch,
         positive,
@@ -566,8 +569,9 @@ class InfiniteTalkAutoSampler:
         logging.info(f"InfiniteTalk base pass: decoded {frames.shape[0]} frames")
         return frames
 
+    @classmethod
     def _run_extend_pass(
-        self,
+        cls,
         model,
         model_patch,
         positive,
@@ -659,53 +663,48 @@ class InfiniteTalkAutoSampler:
 # ===========================================================================
 
 
-class InfiniteTalkAutoSamplerAdvanced:
+class InfiniteTalkAutoSamplerAdvanced(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model": ("MODEL",),
-                "model_patch": ("MODEL_PATCH",),
-                "positive": ("CONDITIONING",),
-                "negative": ("CONDITIONING",),
-                "vae": ("VAE",),
-                "audio_encoder_output_1": ("AUDIO_ENCODER_OUTPUT",),
-                "audio": ("AUDIO",),
-                "noise": ("NOISE",),
-                "sampler": ("SAMPLER",),
-                "sigmas": ("SIGMAS",),
-                "width": ("INT", {"default": 832, "min": 16, "max": 4096, "step": 16}),
-                "height": ("INT", {"default": 480, "min": 16, "max": 4096, "step": 16}),
-                "length": ("INT", {"default": 81, "min": 1, "max": 4096, "step": 4}),
-                "motion_frame_count": (
-                    "INT",
-                    {"default": 9, "min": 1, "max": 33, "step": 1},
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="InfiniteTalkAutoSamplerAdvanced",
+            display_name="InfiniteTalk Auto Sampler (Advanced)",
+            category="video/infinitetalk",
+            inputs=[
+                io.Model.Input("model"),
+                io.ModelPatch.Input("model_patch"),
+                io.Conditioning.Input("positive"),
+                io.Conditioning.Input("negative"),
+                io.Vae.Input("vae"),
+                io.AudioEncoderOutput.Input("audio_encoder_output_1"),
+                io.Audio.Input("audio"),
+                io.Noise.Input("noise"),
+                io.Sampler.Input("sampler"),
+                io.Sigmas.Input("sigmas"),
+                io.Int.Input("width", default=832, min=16, max=4096, step=16),
+                io.Int.Input("height", default=480, min=16, max=4096, step=16),
+                io.Int.Input("length", default=81, min=1, max=4096, step=4),
+                io.Int.Input("motion_frame_count", default=9, min=1, max=33),
+                io.Float.Input(
+                    "audio_scale", default=1.0, min=-10.0, max=10.0, step=0.01
                 ),
-                "audio_scale": (
-                    "FLOAT",
-                    {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01},
-                ),
-                "cfg": (
-                    "FLOAT",
-                    {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1},
-                ),
-            },
-            "optional": {
-                "start_image": ("IMAGE",),
-                "clip_vision_output": ("CLIP_VISION_OUTPUT",),
-                "audio_encoder_output_2": ("AUDIO_ENCODER_OUTPUT",),
-                "mask_1": ("MASK",),
-                "mask_2": ("MASK",),
-            },
-        }
+                io.Float.Input("cfg", default=1.0, min=0.0, max=100.0, step=0.1),
+                io.Int.Input("framerate", default=25, min=1, max=120),
+                io.Image.Input("start_image", optional=True),
+                io.ClipVisionOutput.Input("clip_vision_output", optional=True),
+                io.AudioEncoderOutput.Input("audio_encoder_output_2", optional=True),
+                io.Mask.Input("mask_1", optional=True),
+                io.Mask.Input("mask_2", optional=True),
+            ],
+            outputs=[
+                io.Image.Output(display_name="images"),
+                io.Audio.Output(display_name="audio"),
+            ],
+        )
 
-    RETURN_TYPES = ("IMAGE", "AUDIO")
-    RETURN_NAMES = ("images", "audio")
-    FUNCTION = "execute"
-    CATEGORY = "video/infinitetalk"
-
+    @classmethod
     def execute(
-        self,
+        cls,
         model,
         model_patch,
         positive,
@@ -722,15 +721,16 @@ class InfiniteTalkAutoSamplerAdvanced:
         motion_frame_count,
         audio_scale,
         cfg,
+        framerate,
         start_image=None,
         clip_vision_output=None,
         audio_encoder_output_2=None,
         mask_1=None,
         mask_2=None,
-    ):
+    ) -> io.NodeOutput:
         validate_two_speaker(audio_encoder_output_2, mask_1, mask_2)
         total_frames, num_extends, total_passes = compute_pass_counts(
-            audio, length, motion_frame_count
+            audio, length, motion_frame_count, framerate
         )
 
         ref_masks = None
@@ -738,7 +738,7 @@ class InfiniteTalkAutoSamplerAdvanced:
             ref_masks = torch.cat([mask_1, mask_2])
 
         encoded_audio_list = encode_audio_features(
-            audio_encoder_output_1, audio_encoder_output_2, model_patch
+            audio_encoder_output_1, audio_encoder_output_2, model_patch, framerate
         )
         start_image_cond = encode_start_image(start_image, vae, width, height, length)
 
@@ -747,7 +747,7 @@ class InfiniteTalkAutoSamplerAdvanced:
         pbar = comfy.utils.ProgressBar(total_steps)
 
         # --- Base pass ---
-        accumulated_frames = self._run_base_pass(
+        accumulated_frames = cls._run_base_pass(
             model,
             model_patch,
             positive,
@@ -771,7 +771,7 @@ class InfiniteTalkAutoSamplerAdvanced:
 
         # --- Extend passes ---
         for ext_idx in range(num_extends):
-            accumulated_frames = self._run_extend_pass(
+            accumulated_frames = cls._run_extend_pass(
                 model,
                 model_patch,
                 positive,
@@ -798,10 +798,11 @@ class InfiniteTalkAutoSamplerAdvanced:
         if accumulated_frames.shape[0] > total_frames:
             accumulated_frames = accumulated_frames[:total_frames]
 
-        return (accumulated_frames, audio)
+        return io.NodeOutput(accumulated_frames, audio)
 
+    @classmethod
     def _run_base_pass(
-        self,
+        cls,
         model,
         model_patch,
         positive,
@@ -873,8 +874,9 @@ class InfiniteTalkAutoSamplerAdvanced:
         )
         return frames
 
+    @classmethod
     def _run_extend_pass(
-        self,
+        cls,
         model,
         model_patch,
         positive,
