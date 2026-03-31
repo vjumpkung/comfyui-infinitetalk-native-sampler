@@ -15,9 +15,10 @@ ComfyUI custom node package for InfiniteTalk - generates lip-sync videos from au
 ## Architecture Patterns
 
 ### ComfyUI Node Structure
-- Nodes defined in [`nodes.py`](nodes.py) as classes with `INPUT_TYPES`, `RETURN_TYPES`, `FUNCTION`, `CATEGORY` class attributes
-- Custom ComfyUI type annotations: `"MODEL"`, `"MODEL_PATCH"`, `"CONDITIONING"`, `"AUDIO_ENCODER_OUTPUT"`, `"NOISE"`, `"SAMPLER"`, `"SIGMAS"`
-- Node mappings exported from [`__init__.py`](__init__.py) via `NODE_CLASS_MAPPINGS` and `NODE_DISPLAY_NAME_MAPPINGS`
+- Nodes defined in [`nodes.py`](nodes.py) as V3 classes extending `io.ComfyNode` with `define_schema()` and `execute()` classmethods
+- Imported from `comfy_api.latest`: `io`, `ComfyExtension`
+- Types use native `io.*` classes: `io.Vae`, `io.Clip`, `io.ModelPatch`, `io.AudioEncoderOutput`, `io.Noise`, `io.Sampler`, `io.Sigmas`, `io.ClipVisionOutput`, `io.Audio`
+- Node registration in [`__init__.py`](__init__.py) via `ComfyExtension.get_node_list()` and `comfy_entrypoint()`
 
 ### Model Patching System
 - Uses [`comfy.patcher_extension.WrappersMP.OUTER_SAMPLE`](nodes.py:296) for model wrapping
@@ -26,7 +27,8 @@ ComfyUI custom node package for InfiniteTalk - generates lip-sync videos from au
 - Two patch types: `attn2_patch` (cross-attention) and optional `attn1_patch` (self-attention for reference masks)
 
 ### Audio Processing
-- Linear interpolation from 50fps to 25fps using [`linear_interpolation()`](nodes.py:20)
+- Linear interpolation from 50fps to `framerate` fps using [`linear_interpolation()`](nodes.py:20)
+- `framerate` is a user-supplied INT input (default 25) passed through `compute_pass_counts()` and `encode_audio_features()`
 - Audio encoder output validated against model patch dimensions ([`encode_audio_features()`](nodes.py:162))
 - Multi-speaker: masks concatenated via `torch.cat([mask_1, mask_2])`, combined with "add" mode
 
@@ -39,27 +41,27 @@ ComfyUI custom node package for InfiniteTalk - generates lip-sync videos from au
 
 ### Progress Bar
 - Single `ProgressBar(total_passes * steps_per_pass)` spans the entire generation
-- `make_pass_callback()` ([`nodes.py:265`](nodes.py:265)) wraps `latent_preview.prepare_callback` and calls `pbar.update_absolute(step_offset + step + 1)` for per-step updates across all passes
+- `make_pass_callback()` wraps `latent_preview.prepare_callback` and calls `pbar.update_absolute(step_offset + step + 1)` for per-step updates across all passes
 - `common_ksampler` and `advanced_sampler` accept an optional `callback` parameter; pass methods always supply one
 
 ### Device Handling
-- Always use [`comfy.model_management.intermediate_device()`](nodes.py:495) for tensor creation
+- Always use `comfy.model_management.intermediate_device()` for tensor creation
 - Final samples moved to intermediate device: `samples.to(comfy.model_management.intermediate_device())`
 
 ## Two Node Variants
 
-1. **InfiniteTalkAutoSampler** ([lines 338-647](nodes.py:338)): Standard KSampler interface with seed/steps/cfg/sampler_name/scheduler/denoise
-2. **InfiniteTalkAutoSamplerAdvanced** ([lines 655-~930](nodes.py:655)): Custom sampler interface accepting NOISE/SAMPLER/SIGMAS objects for advanced workflows
+1. **InfiniteTalkAutoSampler**: Standard KSampler interface with seed/steps/cfg/sampler_name/scheduler/denoise/framerate
+2. **InfiniteTalkAutoSamplerAdvanced**: Custom sampler interface accepting NOISE/SAMPLER/SIGMAS objects with framerate for advanced workflows
 
 ## Critical Implementation Details
 
 ### Motion Frame Handling
-- Base pass uses start image's first latent frame if provided, else zeros ([`nodes.py:509-515`](nodes.py:509))
-- Extend pass VAE-encodes the last `motion_frame_count` RGB frames from accumulated pixel output ([`nodes.py:590-598`](nodes.py:590))
+- Base pass uses start image's first latent frame if provided, else zeros
+- Extend pass VAE-encodes the last `motion_frame_count` RGB frames from accumulated pixel output
 - Motion frames **must** be re-encoded from decoded pixels each pass — WAN uses a causal VAE where latent frame 0 is a keyframe (absolute encoding); slicing inter-frame latents from prior pass output and reusing them as position-0 motion frames causes color shift artifacts
 
 ### Audio Feature Validation
-- Audio encoder dimensions must match `model_patch.model.audio_proj.blocks` and `.channels` ([`nodes.py:178-187`](nodes.py:178))
+- Audio encoder dimensions must match `model_patch.model.audio_proj.blocks` and `.channels`
 - Compatible encoders: wav2vec2-base (blocks=12, channels=768)
 
 ### Latent Shape Convention
@@ -80,6 +82,7 @@ ComfyUI custom node package for InfiniteTalk - generates lip-sync videos from au
 ## Dependencies
 
 Runtime imports from ComfyUI core (not pip packages):
+- `comfy_api.latest` — V3 node API (`io`, `ComfyExtension`)
 - `comfy.model_management`, `comfy.sample`, `comfy.samplers`, `comfy.utils`, `comfy.patcher_extension`
 - `latent_preview`, `node_helpers`
 - `comfy.ldm.wan.model_multitalk` - WAN model-specific InfiniteTalk implementations
