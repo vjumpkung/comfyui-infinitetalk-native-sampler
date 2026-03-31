@@ -8,6 +8,7 @@ A ComfyUI custom node package for generating lip-sync videos from audio using WA
 - 🗣️ **Lip-Sync Generation** — Produces realistic talking head videos synchronized to input audio
 - 👥 **Multi-Speaker Support** — Supports two speakers with separate masks for advanced scenarios
 - 🎛️ **Two Sampler Variants** — Choose between standard KSampler or advanced custom sampler interfaces
+- 🎞️ **Configurable Framerate** — Set output framerate (default 25fps) to match your target video format
 - 🎬 **Motion Frame Conditioning** — Uses motion frames to maintain temporal consistency across extended generations
 
 ## Nodes
@@ -32,6 +33,7 @@ Standard KSampler interface with familiar parameters:
 | `length`                 | INT                  | Frames per pass (default: 81)               |
 | `motion_frame_count`     | INT                  | Motion frames for conditioning (default: 9) |
 | `audio_scale`            | FLOAT                | Audio conditioning scale (default: 1.0)     |
+| `framerate`              | INT                  | Output framerate in fps (default: 25)        |
 | `start_image`            | IMAGE                | Optional starting image                     |
 | `clip_vision_output`     | CLIP_VISION_OUTPUT   | Optional CLIP vision conditioning           |
 | `audio_encoder_output_2` | AUDIO_ENCODER_OUTPUT | Optional second speaker audio               |
@@ -107,7 +109,7 @@ total_passes = 1 + ceil((total_frames - length) / extend_frames)
 
 ### Audio Processing
 
-- Linear interpolation from 50fps to 25fps
+- Linear interpolation from 50fps to the configured `framerate`
 - Audio encoder output validated against model patch dimensions
 - Compatible encoders: wav2vec2-base (blocks=12, channels=768)
 
@@ -127,6 +129,7 @@ The sampler applies patches to the model for each pass:
 | `audio_scale`        | 1.0     | -10.0 to 10.0     | Strength of audio conditioning                     |
 | `width`              | 832     | 16-4096 (step 16) | Output video width                                 |
 | `height`             | 480     | 16-4096 (step 16) | Output video height                                |
+| `framerate`          | 25      | 1-120             | Output framerate; also controls audio resampling   |
 
 ### Tuning Tips
 
