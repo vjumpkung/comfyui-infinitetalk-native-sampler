@@ -134,6 +134,8 @@ async def comfy_entrypoint() -> MyExtension:
 
 ### ComfyUI types
 
+> **Note:** Class names use PascalCase, not all-caps. `io.VAE` and `io.CLIP` do NOT exist — use `io.Vae` and `io.Clip`.
+
 | V1 | V3 |
 |----|----|
 | `"IMAGE"` | `io.Image.Input("name")` |
@@ -141,8 +143,20 @@ async def comfy_entrypoint() -> MyExtension:
 | `"LATENT"` | `io.Latent.Input("name")` |
 | `"CONDITIONING"` | `io.Conditioning.Input("name")` |
 | `"MODEL"` | `io.Model.Input("name")` |
-| `"VAE"` | `io.VAE.Input("name")` |
-| `"CLIP"` | `io.CLIP.Input("name")` |
+| `"VAE"` | `io.Vae.Input("name")` |
+| `"CLIP"` | `io.Clip.Input("name")` |
+| `"CLIP_VISION"` | `io.ClipVision.Input("name")` |
+| `"CLIP_VISION_OUTPUT"` | `io.ClipVisionOutput.Input("name")` |
+| `"CONTROL_NET"` | `io.ControlNet.Input("name")` |
+| `"STYLE_MODEL"` | `io.StyleModel.Input("name")` |
+| `"UPSCALE_MODEL"` | `io.UpscaleModel.Input("name")` |
+| `"AUDIO"` | `io.Audio.Input("name")` |
+| `"NOISE"` | `io.Noise.Input("name")` |
+| `"SAMPLER"` | `io.Sampler.Input("name")` |
+| `"SIGMAS"` | `io.Sigmas.Input("name")` |
+| `"GUIDER"` | `io.Guider.Input("name")` |
+| `"MODEL_PATCH"` | `io.ModelPatch.Input("name")` |
+| `"AUDIO_ENCODER_OUTPUT"` | `io.AudioEncoderOutput.Input("name")` |
 
 ### Custom types
 
