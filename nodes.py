@@ -596,6 +596,16 @@ class InfiniteTalkAutoSampler(io.ComfyNode):
         pbar,
         step_offset,
     ):
+        # Free per-iteration state from the previous extend pass before
+        # allocating the next pass's tensors. InfiniteTalk's per-pass
+        # model.clone() with attached wrappers/patches creates references
+        # that ComfyUI's automatic cleanup_models_gc() does not run within
+        # a single sampler invocation, so without this the global
+        # current_loaded_models list grows by one entry per extend pass
+        # and CPU/GPU memory rises linearly with audio length.
+        comfy.model_management.cleanup_models_gc()
+        comfy.model_management.cleanup_models()
+        comfy.model_management.soft_empty_cache()
         latent = torch.zeros(
             [1, 16, ((length - 1) // 4) + 1, height // 8, width // 8],
             device=comfy.model_management.intermediate_device(),
@@ -899,6 +909,16 @@ class InfiniteTalkAutoSamplerAdvanced(io.ComfyNode):
         pbar,
         step_offset,
     ):
+        # Free per-iteration state from the previous extend pass before
+        # allocating the next pass's tensors. InfiniteTalk's per-pass
+        # model.clone() with attached wrappers/patches creates references
+        # that ComfyUI's automatic cleanup_models_gc() does not run within
+        # a single sampler invocation, so without this the global
+        # current_loaded_models list grows by one entry per extend pass
+        # and CPU/GPU memory rises linearly with audio length.
+        comfy.model_management.cleanup_models_gc()
+        comfy.model_management.cleanup_models()
+        comfy.model_management.soft_empty_cache()
         latent = torch.zeros(
             [1, 16, ((length - 1) // 4) + 1, height // 8, width // 8],
             device=comfy.model_management.intermediate_device(),
